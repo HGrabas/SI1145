@@ -241,8 +241,8 @@ float SI1145::forceMeasLux(void){
         // we have an overflow
         // we clear the overflow
         write8(SI1145_REG_COMMAND, SI1145_NOP);
-        vis = 0x07ff; //put the default max value
-        ir  = 0x07ff; //put the default max value
+        vis = 0x7FFF; //put the default max value
+        ir  = 0x7FFF; //put the default max value
     }
     else {
         vis = readVisible();
