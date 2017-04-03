@@ -64,8 +64,7 @@ static void Write_DarkFramesToEEPROM(uint8_t gain, uint8_t range, uint8_t sense,
 
 
 static void Read_DarkFramesFromEEPROM() {
-    
-    
+    //TODO
 }
 
 boolean SI1145::begin(void) {
@@ -233,20 +232,51 @@ float SI1145::forceMeasLux(void){
     //sending and ALS force command
     write8(SI1145_REG_COMMAND, SI1145_ALS_FORCE);
     //then we should wait until the measurments completes
-    //the worste case is 3*25.55x2^7 = 3*3.28ms = 9.84ms
+    //the worse case is 3*25.55x2^7 = 3*3.28ms = 9.84ms
     delay(20);
     //make sure that there is no overflow
     uint8_t resp = read8(SI1145_REG_RESPONSE);
-    if ((resp & 0x80) != 0) {
-        // we have an overflow
-        // we clear the overflow
-        write8(SI1145_REG_COMMAND, SI1145_NOP);
-        vis = 0x7FFF; //put the default max value
-        ir  = 0x7FFF; //put the default max value
-    }
-    else {
-        vis = readVisible();
-        ir  = readIR();
+    switch (resp) {
+        case 0x80:  //Invalid command
+            write8(SI1145_REG_COMMAND, SI1145_NOP);
+            vis = readVisible();
+            ir  = readIR();
+            break;
+        case 0x88: //PS1 overflow
+            write8(SI1145_REG_COMMAND, SI1145_NOP);
+            vis = readVisible();
+            ir  = readIR();
+            break;
+        case 0x89: //PS2 overflow
+            write8(SI1145_REG_COMMAND, SI1145_NOP);
+            vis = readVisible();
+            ir  = readIR();
+            break;
+        case 0x8A: //PS3 overflow
+            write8(SI1145_REG_COMMAND, SI1145_NOP);
+            vis = readVisible();
+            ir  = readIR();
+            break;
+        case 0x8C: //Vis overflow
+            vis = 0x7FF;
+            write8(SI1145_REG_COMMAND, SI1145_NOP);
+            ir  = readIR();
+            break;
+        case 0x8D: //IR overflow
+            ir = 0x7FF;
+            write8(SI1145_REG_COMMAND, SI1145_NOP);
+            vis = readVisible();
+            break;
+        case 0x8E:
+            write8(SI1145_REG_COMMAND, SI1145_NOP);
+            vis = readVisible();
+            ir  = readIR();
+            break;
+        default:
+            vis = readVisible();
+            ir  = readIR();
+            break;
+            
     }
     uint16_t tp  = readTemp();
     
@@ -295,12 +325,15 @@ float SI1145::forceMeasLux(void){
         case Gain_3:
             _ir = ir-0.01f*(tp-11136)/35.0f;
             break;
+        default:
+            _ir = ir;
+            break;
     }
     
     //compute the lux
     float _rangeVis = 1 + 13.5f * rangeVis; //14.5 if high range, 1 otherwise
     float _rangeIR  = 1 + 13.5f * rangeIR; //14.5 if high range, 1 otherwise
-    float lux = (5.41f * vis * _rangeVis) / (1 << gainVis) + (-0.08f * ir * _rangeIR) / (1 << gainIR);
+    float lux = (5.41f * _vis * _rangeVis) / (1 << gainVis) + (-0.08f * _ir * _rangeIR) / (1 << gainIR);
     if (lux < 0)
         lux = 0.0;
     
