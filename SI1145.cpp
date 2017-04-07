@@ -56,6 +56,7 @@ SI1145::SI1145() {
     rangeIR = 0;
 }
 
+//uncheked - function to store the dark fram to EEPROM to survive power offs.
 static void Write_DarkFramesToEEPROM(uint8_t gain, uint8_t range, uint8_t sense, uint8_t value) {
     uint8_t addr = gain + range * 8 + value * 16;
     EEPROM.write(addr, value);
@@ -91,24 +92,25 @@ boolean SI1145::begin(void) {
     write8(SI1145_REG_MEASRATE0, 0x00);
     write8(SI1145_REG_MEASRATE1, 0x00);
     
-    // 1/. Write 0 to the command register = NOP command
+    // Write 0 to the command register = NOP command
     write8(SI1145_REG_COMMAND, SI1145_NOP);
     
-    // 2/. Put the module in ALS force mode
+    // Put the module in ALS force mode
     write8(SI1145_REG_COMMAND, SI1145_ALS_FORCE);
     
     // Disable the interrupt pin which unused
+    // The INT hardware pin is enabled through the INT_OE bit in the INT_CFG register.
     // INT_OE controls the INT pin drive
     // 0: INT pin is never driven
-    // 0 is the default value there is nothing to do.
-    //write8(SI1145_REG_INTCFG, 0x00);
+    write8(SI1145_REG_INTCFG, 0x00);
     
     // Enable interrupts status for ALS
     // Disable interrupt status for PS1, PS2, PS3
     // ALS_IE=1: Assert INT pin whenever VIS or UV measurements are ready
     write8(SI1145_REG_IRQEN, SI1145_REG_IRQEN_ALSEVERYSAMPLE);
     
-    //Typically, the host software is expected to read the IRQ_STATUS register, stores a local copy, and then writes the same value back to the IRQ_STATUS to clear the interrupt source. The INT_CFG register is normally written with '1'.
+    // Monitor the temperature in the AUX ADC
+    writeParam(SI1145_PARAM_AUXADCMUX,SI1145_PARAM_ADCMUX_TEMP);
     
     // Use the small IR diode
     writeParam(SI1145_PARAM_ALSIRADCMUX, SI1145_PARAM_ADCMUX_SMALLIR);
@@ -117,14 +119,18 @@ boolean SI1145::begin(void) {
     // take 511 clocks to measure
     writeParam(SI1145_PARAM_ALSIRADCOUNTER, SI1145_PARAM_ADCCOUNTER_511CLK);
     // in high range mode
-    writeParam(SI1145_PARAM_ALSIRADCMISC, SI1145_PARAM_ALSIRADCMISC_RANGE);
+    writeParam(SI1145_PARAM_ALSIRADCMISC, SI1145_PARAM_ALSIRADCMISC_RANGE_LOW);
     
-    // fastest clocks, clock div 1
-    writeParam(SI1145_PARAM_ALSVISADCGAIN, 0);
-    // take 511 clocks to measure
-    writeParam(SI1145_PARAM_ALSVISADCOUNTER, SI1145_PARAM_ADCCOUNTER_511CLK);
-    // in high range mode (not normal signal)
-    writeParam(SI1145_PARAM_ALSVISADCMISC, SI1145_PARAM_ALSVISADCMISC_VISRANGE);
+    //Read the temperature upon startup
+    //sending an ALS force command - verify that this also initiates a temperature measurement
+    write8(SI1145_REG_COMMAND, SI1145_ALS_FORCE);
+    
+    tp_init = readTemp(); //
+    // Typically, the host software is expected to read the IRQ_STATUS register, stores a local copy, and then writes the same value back to the IRQ_STATUS to clear the interrupt source.
+    // Clearing the IRQ status register
+    uint8_t irq_status = read8(SI1145_REG_IRQSTAT);
+    write8(SI1145_REG_IRQSTAT,irq_status);
+
     
     return true;
 }
@@ -179,8 +185,8 @@ void SI1145::autoRange(uint16_t _vis, uint16_t _ir) {
     // for the visible light
     if (_vis > 25000) { //overflow in visible light or getting close to saturation (saturation happens at 32767 acoording to AN498
         if (gainVis == 0) { // At the lowest gain and saturation
-            if (!rangeVis) { // Not in high range mode
-                rangeVis = SI1145_PARAM_ALSVISADCMISC_VISRANGE;
+            if (rangeVis == 0) { // Not in high range mode
+                rangeVis = 1;
             }
         } //Else we are in high range mode can't decrease the range any further
         else if (gainVis > 0){ // Not at the lowest gain setting
@@ -189,19 +195,18 @@ void SI1145::autoRange(uint16_t _vis, uint16_t _ir) {
     }
     else if (_vis < 1500) { //no overflow and low readings <1000
         if (gainVis < 7) { //if the gain is not maximum increase it
-            //setVisibleGain(gainVis+(uint8_t)1);
             gainVis += 1;
         }
-        else if (rangeVis) { //if the gain is max and range high decrease the range
-            rangeVis = SI1145_PARAM_ALSVISADCMISC_VISRANGE_LOW;
-            gainVis = 0; //Decrease the gain by factor of 8 because range is x14.5 -- removed too dangerous sometime gain is not properly read over i2c.
+        else if (rangeVis == 1) { //if the gain is max and range high decrease the range
+            rangeVis = 0;
+            gainVis = 0; //Put the gain at 0.
         }
     }
     // for the IR light
     if (_ir > 25000) { //overflow in IR light or getting close to saturation (saturation happens at 0x7FFF acoording to AN498
         if (gainIR == 0) { // At the lowest gain and saturation
-            if (!rangeIR) { // Not in high range mode
-                rangeIR = SI1145_PARAM_ALSIRADCMISC_RANGE;
+            if (rangeIR == 0) { // Not in high range mode
+                rangeIR = 1;
             }
         } //Else we are in high range mode can't decrease the range any further
         else if (gainIR > 0) { // Not at the lowest gain setting
@@ -212,24 +217,25 @@ void SI1145::autoRange(uint16_t _vis, uint16_t _ir) {
         if (gainIR < 7) { //if the gain is not maximum increase it
             gainIR += 1;
         }
-        else if (rangeIR) { //if the gain is max and range high decrease the range
-            rangeIR = SI1145_PARAM_ALSIRADCMISC_RANGE_LOW;
-            gainIR += 0; //Decrease the gain by factor of 8 because range is x14.5
+        else if (rangeIR == 1) { //if the gain is max and range high decrease the range
+            rangeIR = 0;
+            gainIR = 0; //Put the gain at 0.
         }
     }
     setVisibleGain(gainVis);
     setIRGain(gainIR);
-    setVisibleRange(rangeVis);
-    setIRRange(rangeIR);
+    setVisibleRange((rangeVis==0) ? SI1145_PARAM_ALSVISADCMISC_VISRANGE_LOW : SI1145_PARAM_ALSVISADCMISC_VISRANGE_HIGH);
+    setIRRange((rangeIR==0) ?  SI1145_PARAM_ALSIRADCMISC_RANGE_LOW : SI1145_PARAM_ALSIRADCMISC_RANGE_HIGH);
 }
 
 // Force an ALS measurment
 float SI1145::forceMeasLux(void){
-    float _vis;
-    float _ir;
+    float _vis; //visible light after temperature correction
+    float _ir;  //ir light after temperature correction
     uint16_t vis;
     uint16_t ir;
-    //sending and ALS force command
+    //uint16_t tp;
+    //sending an ALS force command - verify that this also initiates a temperature measurement
     write8(SI1145_REG_COMMAND, SI1145_ALS_FORCE);
     //then we should wait until the measurments completes
     //the worse case is 3*25.55x2^7 = 3*3.28ms = 9.84ms
@@ -238,103 +244,119 @@ float SI1145::forceMeasLux(void){
     uint8_t resp = read8(SI1145_REG_RESPONSE);
     switch (resp) {
         case 0x80:  //Invalid command
-            write8(SI1145_REG_COMMAND, SI1145_NOP);
             vis = readVisible();
             ir  = readIR();
+            tp  = readTemp();
+            write8(SI1145_REG_COMMAND, SI1145_NOP);
             break;
         case 0x88: //PS1 overflow
-            write8(SI1145_REG_COMMAND, SI1145_NOP);
             vis = readVisible();
             ir  = readIR();
+            tp  = readTemp();
+            write8(SI1145_REG_COMMAND, SI1145_NOP);
             break;
         case 0x89: //PS2 overflow
-            write8(SI1145_REG_COMMAND, SI1145_NOP);
             vis = readVisible();
             ir  = readIR();
+            tp  = readTemp();
+            write8(SI1145_REG_COMMAND, SI1145_NOP);
             break;
         case 0x8A: //PS3 overflow
-            write8(SI1145_REG_COMMAND, SI1145_NOP);
             vis = readVisible();
             ir  = readIR();
+            tp  = readTemp();
+            write8(SI1145_REG_COMMAND, SI1145_NOP);
             break;
         case 0x8C: //Vis overflow
             vis = 0x7FF;
-            write8(SI1145_REG_COMMAND, SI1145_NOP);
             ir  = readIR();
+            tp  = readTemp();
+            write8(SI1145_REG_COMMAND, SI1145_NOP);
             break;
         case 0x8D: //IR overflow
             ir = 0x7FF;
-            write8(SI1145_REG_COMMAND, SI1145_NOP);
             vis = readVisible();
-            break;
-        case 0x8E:
+            tp  = readTemp();
             write8(SI1145_REG_COMMAND, SI1145_NOP);
+            break;
+        case 0x8E: //AUX overflow
             vis = readVisible();
             ir  = readIR();
+            tp  = tp_init;
+            write8(SI1145_REG_COMMAND, SI1145_NOP);
             break;
         default:
             vis = readVisible();
             ir  = readIR();
-            break;
-            
-    }
-    uint16_t tp  = readTemp();
-    
-    //clearing the IRQ status register
-    write8(SI1145_REG_IRQSTAT,0xFF);
-    
-    //compensate for temperature drifts
-    //temperature sensor offset 11136 at 25C (reference)
-    //35 ADC count per C
-    switch (gainVis) {
-        case Gain_0:
-            _vis = vis-0.3f*(tp-11136)/35.0f;
-            break;
-        case Gain_1:
-            _vis = vis-0.11f*(tp-11136)/35.0f;
-            break;
-        case Gain_2:
-            _vis = vis-0.06f*(tp-11136)/35.0f;
-            break;
-        case Gain_3:
-            _vis = vis-0.03f*(tp-11136)/35.0f;
-            break;
-        case Gain_4:
-            _vis = vis-0.01f*(tp-11136)/35.0f;
-            break;
-        case Gain_5:
-            _vis = vis-0.008f*(tp-11136)/35.0f;
-            break;
-        case Gain_6:
-            _vis = vis-0.007f*(tp-11136)/35.0f;
-            break;
-        case Gain_7:
-            _vis = vis-0.008f*(tp-11136)/35.0f;
-            break;
-    }
-    switch (gainIR) {
-        case Gain_0:
-            _ir = ir-0.3f*(tp-11136)/35.0f;
-            break;
-        case Gain_1:
-            _ir = ir-0.06f*(tp-11136)/35.0f;
-            break;
-        case Gain_2:
-            _ir = ir-0.03f*(tp-11136)/35.0f;
-            break;
-        case Gain_3:
-            _ir = ir-0.01f*(tp-11136)/35.0f;
-            break;
-        default:
-            _ir = ir;
+            tp  = readTemp();
             break;
     }
     
-    //compute the lux
-    float _rangeVis = 1 + 13.5f * rangeVis; //14.5 if high range, 1 otherwise
-    float _rangeIR  = 1 + 13.5f * rangeIR; //14.5 if high range, 1 otherwise
+    // Typically, the host software is expected to read the IRQ_STATUS register, stores a local copy, and then writes the same value back to the IRQ_STATUS to clear the interrupt source.
+    // Clearing the IRQ status register
+    uint8_t irq_status = read8(SI1145_REG_IRQSTAT);
+    write8(SI1145_REG_IRQSTAT,irq_status);
+    
+    // Compensate for temperature drifts
+    // Temperature sensor offset: tp_init at 25C (reference)
+    // 35 ADC count per C
+    if (rangeVis == 1) { //in high range no temperature corrections are required
+        _vis = vis;}
+    else {
+        switch (gainVis) {
+            case Gain_0:
+                _vis = vis-0.3f*(tp-tp_init)/35.0f;
+                break;
+            case Gain_1:
+                _vis = vis-0.11f*(tp-tp_init)/35.0f;
+                break;
+            case Gain_2:
+                _vis = vis-0.06f*(tp-tp_init)/35.0f;
+                break;
+            case Gain_3:
+                _vis = vis-0.03f*(tp-tp_init)/35.0f;
+                break;
+            case Gain_4:
+                _vis = vis-0.01f*(tp-tp_init)/35.0f;
+                break;
+            case Gain_5:
+                _vis = vis-0.008f*(tp-tp_init)/35.0f;
+                break;
+            case Gain_6:
+                _vis = vis-0.007f*(tp-tp_init)/35.0f;
+                break;
+            case Gain_7:
+                _vis = vis-0.008f*(tp-tp_init)/35.0f;
+                break;
+        }
+    }
+    if (rangeIR == 1) { // in high range no temperature corrections are required
+        _ir = ir;}
+    else {
+        switch (gainIR) {
+            case Gain_0:
+                _ir = ir-0.3f*(tp-tp_init)/35.0f;
+                break;
+            case Gain_1:
+                _ir = ir-0.06f*(tp-tp_init)/35.0f;
+                break;
+            case Gain_2:
+                _ir = ir-0.03f*(tp-tp_init)/35.0f;
+                break;
+            case Gain_3:
+                _ir = ir-0.01f*(tp-tp_init)/35.0f;
+                break;
+            default:
+                _ir = ir;
+                break;
+        }
+    }
+    
+    // compute the lux value - for an uncovered SI1145 die
+    float _rangeVis = (rangeVis == 0) 1f : 14.5f; //14.5 if high range, 1 otherwise
+    float _rangeIR  = (rangeIR == 0) 1f : 14.5f; //14.5 if high range, 1 otherwise
     float lux = (5.41f * _vis * _rangeVis) / (1 << gainVis) + (-0.08f * _ir * _rangeIR) / (1 << gainIR);
-    if (lux < 0)
+    if (lux < 0) //safeguard
         lux = 0.0;
     
     // autorange the sensor
@@ -346,78 +368,94 @@ float SI1145::forceMeasLux(void){
 uint16_t SI1145::readVisible(void) {
     uint16_t vis = read8(SI1145_REG_ALSVISDATA0);
     vis |= (read8(SI1145_REG_ALSVISDATA1) <<8);
-    if ((vis > 0) && (vis < 256)) {
-    switch (rangeVis) {
-        case Range_0:
-        switch (gainVis) {
-            case Gain_0:
-                if (vis < Dark_Vis_0_Low)
-                    Dark_Vis_0_Low = vis;
+    if ((vis > 0) && (vis < 256)) { //make sure we have a dark frame
+        switch (rangeVis) {
+            case Range_0:
+                switch (gainVis) {
+                    case Gain_0:
+                        if (vis < Dark_Vis_0_Low)
+                            Dark_Vis_0_Low = vis;
+                        vis -= Dark_Vis_0_Low;
+                        break;
+                    case Gain_1:
+                        if (vis < Dark_Vis_1_Low)
+                            Dark_Vis_1_Low = vis;
+                        vis -= Dark_Vis_1_Low;
+                        break;
+                    case Gain_2:
+                        if (vis < Dark_Vis_2_Low)
+                            Dark_Vis_2_Low = vis;
+                        vis -= Dark_Vis_2_Low;
+                        break;
+                    case Gain_3:
+                        if (vis < Dark_Vis_3_Low)
+                            Dark_Vis_3_Low = vis;
+                        vis -= Dark_Vis_3_Low;
+                        break;
+                    case Gain_4:
+                        if (vis < Dark_Vis_4_Low)
+                            Dark_Vis_4_Low = vis;
+                        vis -= Dark_Vis_4_Low;
+                        break;
+                    case Gain_5:
+                        if (vis < Dark_Vis_5_Low)
+                            Dark_Vis_5_Low = vis;
+                        vis -= Dark_Vis_5_Low;
+                        break;
+                    case Gain_6:
+                        if (vis < Dark_Vis_6_Low)
+                            Dark_Vis_6_Low = vis;
+                        vis -= Dark_Vis_6_Low;
+                        break;
+                    case Gain_7:
+                        if (vis < Dark_Vis_7_Low)
+                            Dark_Vis_7_Low = vis;
+                        vis -= Dark_Vis_7_Low;
+                    break;}
                 break;
-            case Gain_1:
-                if (vis < Dark_Vis_1_Low)
-                    Dark_Vis_1_Low = vis;
-                break;
-            case Gain_2:
-                if (vis < Dark_Vis_2_Low)
-                    Dark_Vis_2_Low = vis;
-                break;
-            case Gain_3:
-                if (vis < Dark_Vis_3_Low)
-                    Dark_Vis_3_Low = vis;
-                break;
-            case Gain_4:
-                if (vis < Dark_Vis_4_Low)
-                    Dark_Vis_4_Low = vis;
-                break;
-            case Gain_5:
-                if (vis < Dark_Vis_5_Low)
-                    Dark_Vis_5_Low = vis;
-                break;
-            case Gain_6:
-                if (vis < Dark_Vis_6_Low)
-                    Dark_Vis_6_Low = vis;
-                break;
-            case Gain_7:
-                if (vis < Dark_Vis_7_Low)
-                    Dark_Vis_7_Low = vis;
-                break;}
-        break;
-        case Range_1:
-            switch (gainVis) {
-                case Gain_0:
-                    if (vis < Dark_Vis_0_High)
-                        Dark_Vis_0_High = vis;
-                    break;
-                case Gain_1:
-                    if (vis < Dark_Vis_1_High)
-                        Dark_Vis_1_High = vis;
-                    break;
-                case Gain_2:
-                    if (vis < Dark_Vis_2_High)
-                        Dark_Vis_2_High = vis;
-                    break;
-                case Gain_3:
-                    if (vis < Dark_Vis_3_High)
-                        Dark_Vis_3_High = vis;
-                    break;
-                case Gain_4:
-                    if (vis < Dark_Vis_4_High)
-                        Dark_Vis_4_High = vis;
-                    break;
-                case Gain_5:
-                    if (vis < Dark_Vis_5_High)
-                        Dark_Vis_5_High = vis;
-                    break;
-                case Gain_6:
-                    if (vis < Dark_Vis_6_High)
-                        Dark_Vis_6_High = vis;
-                    break;
-                case Gain_7:
-                    if (vis < Dark_Vis_7_High)
-                        Dark_Vis_7_High = vis;
-                break;}
-        break;}}
+            case Range_1:
+                switch (gainVis) {
+                    case Gain_0:
+                        if (vis < Dark_Vis_0_High)
+                            Dark_Vis_0_High = vis;
+                        vis -= Dark_Vis_0_High;
+                        break;
+                    case Gain_1:
+                        if (vis < Dark_Vis_1_High)
+                            Dark_Vis_1_High = vis;
+                        vis -= Dark_Vis_1_High;
+                        break;
+                    case Gain_2:
+                        if (vis < Dark_Vis_2_High)
+                            Dark_Vis_2_High = vis;
+                        vis -= Dark_Vis_2_High;
+                        break;
+                    case Gain_3:
+                        if (vis < Dark_Vis_3_High)
+                            Dark_Vis_3_High = vis;
+                        vis -= Dark_Vis_3_High;
+                        break;
+                    case Gain_4:
+                        if (vis < Dark_Vis_4_High)
+                            Dark_Vis_4_High = vis;
+                        vis -= Dark_Vis_4_High;
+                        break;
+                    case Gain_5:
+                        if (vis < Dark_Vis_5_High)
+                            Dark_Vis_5_High = vis;
+                        vis -= Dark_Vis_5_High;
+                        break;
+                    case Gain_6:
+                        if (vis < Dark_Vis_6_High)
+                            Dark_Vis_6_High = vis;
+                        vis -= Dark_Vis_6_High;
+                        break;
+                    case Gain_7:
+                        if (vis < Dark_Vis_7_High)
+                            Dark_Vis_7_High = vis;
+                        vis -= Dark_Vis_7_High;
+                    break;}
+            break;}}
     return vis;
 }
 
@@ -425,78 +463,94 @@ uint16_t SI1145::readVisible(void) {
 uint16_t SI1145::readIR(void) {
     uint16_t ir = read8(SI1145_REG_ALSIRDATA0);
     ir |= (read8(SI1145_REG_ALSIRDATA1) <<8);
-    if ((ir > 0) && (ir < 256)) {
-    switch (rangeIR) {
-        case Range_0:
-            switch (gainIR) {
-                case Gain_0:
-                    if (ir < Dark_IR_0_Low)
-                        Dark_IR_0_Low = ir;
-                    break;
-                case Gain_1:
-                    if (ir < Dark_IR_1_Low)
-                        Dark_IR_1_Low = ir;
-                    break;
-                case Gain_2:
-                    if (ir < Dark_IR_2_Low)
-                        Dark_IR_2_Low = ir;
-                    break;
-                case Gain_3:
-                    if (ir < Dark_IR_3_Low)
-                        Dark_IR_3_Low = ir;
-                    break;
-                case Gain_4:
-                    if (ir < Dark_IR_4_Low)
-                        Dark_IR_4_Low = ir;
-                    break;
-                case Gain_5:
-                    if (ir < Dark_IR_5_Low)
-                        Dark_IR_5_Low = ir;
-                    break;
-                case Gain_6:
-                    if (ir < Dark_IR_6_Low)
-                        Dark_IR_6_Low = ir;
-                    break;
-                case Gain_7:
-                    if (ir < Dark_IR_7_Low)
-                        Dark_IR_7_Low = ir;
-                break;}
-            break;
-        case Range_1:
-            switch (gainIR) {
-                case Gain_0:
-                    if (ir < Dark_IR_0_High)
-                        Dark_IR_0_High = ir;
-                    break;
-                case Gain_1:
-                    if (ir < Dark_IR_1_High)
-                        Dark_IR_1_High = ir;
-                    break;
-                case Gain_2:
-                    if (ir < Dark_IR_2_High)
-                        Dark_IR_2_High = ir;
-                    break;
-                case Gain_3:
-                    if (ir < Dark_IR_3_High)
-                        Dark_IR_3_High = ir;
-                    break;
-                case Gain_4:
-                    if (ir < Dark_IR_4_High)
-                        Dark_IR_4_High = ir;
-                    break;
-                case Gain_5:
-                    if (ir < Dark_IR_5_High)
-                        Dark_IR_5_High = ir;
-                    break;
-                case Gain_6:
-                    if (ir < Dark_IR_6_High)
-                        Dark_IR_6_High = ir;
-                    break;
-                case Gain_7:
-                    if (ir < Dark_IR_7_High)
-                        Dark_IR_7_High = ir;
-                break;}
-        break;}}
+    if ((ir > 0) && (ir < 256)) { //make sure we have a dark frame
+        switch (rangeIR) {
+            case Range_0:
+                switch (gainIR) {
+                    case Gain_0:
+                        if (ir < Dark_IR_0_Low)
+                            Dark_IR_0_Low = ir;
+                        ir -= Dark_IR_0_Low;
+                        break;
+                    case Gain_1:
+                        if (ir < Dark_IR_1_Low)
+                            Dark_IR_1_Low = ir;
+                        ir -= Dark_IR_1_Low;
+                        break;
+                    case Gain_2:
+                        if (ir < Dark_IR_2_Low)
+                            Dark_IR_2_Low = ir;
+                        ir -= Dark_IR_2_Low;
+                        break;
+                    case Gain_3:
+                        if (ir < Dark_IR_3_Low)
+                            Dark_IR_3_Low = ir;
+                        ir -= Dark_IR_3_Low;
+                        break;
+                    case Gain_4:
+                        if (ir < Dark_IR_4_Low)
+                            Dark_IR_4_Low = ir;
+                        ir -= Dark_IR_4_Low;
+                        break;
+                    case Gain_5:
+                        if (ir < Dark_IR_5_Low)
+                            Dark_IR_5_Low = ir;
+                        ir -= Dark_IR_5_Low;
+                        break;
+                    case Gain_6:
+                        if (ir < Dark_IR_6_Low)
+                            Dark_IR_6_Low = ir;
+                        ir -= Dark_IR_6_Low;
+                        break;
+                    case Gain_7:
+                        if (ir < Dark_IR_7_Low)
+                            Dark_IR_7_Low = ir;
+                        ir -= Dark_IR_7_Low;
+                    break;}
+                break;
+            case Range_1:
+                switch (gainIR) {
+                    case Gain_0:
+                        if (ir < Dark_IR_0_High)
+                            Dark_IR_0_High = ir;
+                        ir -= Dark_IR_0_High;
+                        break;
+                    case Gain_1:
+                        if (ir < Dark_IR_1_High)
+                            Dark_IR_1_High = ir;
+                        ir -= Dark_IR_1_High;
+                        break;
+                    case Gain_2:
+                        if (ir < Dark_IR_2_High)
+                            Dark_IR_2_High = ir;
+                        ir -= Dark_IR_2_High;
+                        break;
+                    case Gain_3:
+                        if (ir < Dark_IR_3_High)
+                            Dark_IR_3_High = ir;
+                        ir -= Dark_IR_3_High;
+                        break;
+                    case Gain_4:
+                        if (ir < Dark_IR_4_High)
+                            Dark_IR_4_High = ir;
+                        ir -= Dark_IR_4_High;
+                        break;
+                    case Gain_5:
+                        if (ir < Dark_IR_5_High)
+                            Dark_IR_5_High = ir;
+                        ir -= Dark_IR_5_High;
+                        break;
+                    case Gain_6:
+                        if (ir < Dark_IR_6_High)
+                            Dark_IR_6_High = ir;
+                        ir -= Dark_IR_6_High;
+                        break;
+                    case Gain_7:
+                        if (ir < Dark_IR_7_High)
+                            Dark_IR_7_High = ir;
+                        ir -= Dark_IR_7_High;
+                    break;}
+            break;}}
     return ir;
 }
 
@@ -557,7 +611,7 @@ uint16_t SI1145::read16(uint8_t a) {
 
 void SI1145::write8(uint8_t reg, uint8_t val) {
     
-    Wire.beginTransmission(_addr); // start transmission to device 
+    Wire.beginTransmission(_addr); // start transmission to device
     Wire.write(reg); // sends register address to write
     Wire.write(val); // sends value
     Wire.endTransmission(); // end transmission

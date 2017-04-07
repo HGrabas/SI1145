@@ -76,13 +76,13 @@
 #define SI1145_PARAM_ALSVISADCOUNTER   0x10
 #define SI1145_PARAM_ALSVISADCGAIN 0x11
 #define SI1145_PARAM_ALSVISADCMISC 0x12
-#define SI1145_PARAM_ALSVISADCMISC_VISRANGE 0x20
+#define SI1145_PARAM_ALSVISADCMISC_VISRANGE_HIGH 0x20
 #define SI1145_PARAM_ALSVISADCMISC_VISRANGE_LOW 0x00
 
 #define SI1145_PARAM_ALSIRADCOUNTER   0x1D
 #define SI1145_PARAM_ALSIRADCGAIN 0x1E
 #define SI1145_PARAM_ALSIRADCMISC 0x1F
-#define SI1145_PARAM_ALSIRADCMISC_RANGE 0x20
+#define SI1145_PARAM_ALSIRADCMISC_RANGE_HIGH 0x20
 #define SI1145_PARAM_ALSIRADCMISC_RANGE_LOW 0x00
 
 #define SI1145_PARAM_ADCCOUNTER_511CLK 0x70
@@ -151,6 +151,8 @@
 
 class SI1145  {
 public:
+    uint16_t tp;
+    uint16_t tp_init; //temperature value read upon startup
     
     enum Gain {
            Gain_0 = 0,
@@ -237,7 +239,5 @@ private:
     uint8_t writeParam(uint8_t p, uint8_t v);
     
     uint8_t _addr;
-    uint16_t _vis_dark;
-    uint16_t _ir_dark;
 };
 #endif
